@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   StyleSheet, 
   Text, 
@@ -12,8 +12,10 @@ import {
 } from 'react-native';
 import { GoogleGenAI } from '@google/genai';
 import * as Print from 'expo-print';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ai = new GoogleGenAI({ apiKey: process.env.EXPO_PUBLIC_GEMINI_API_KEY });
+const STORAGE_KEY = '@solo_invoices_history_v1';
 
 const PRESETS = [
   {
@@ -35,6 +37,46 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [invoiceData, setInvoiceData] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const loadHistory = async () => {
+    try {
+      const saved = await AsyncStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        setHistory(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error('Ошибка загрузки истории:', e);
+    }
+  };
+
+  const saveInvoiceToHistory = async (newInvoice) => {
+    try {
+      const itemWithId = {
+        ...newInvoice,
+        id: Date.now().toString(),
+        createdAt: new Date().toLocaleDateString('ru-RU')
+      };
+      const updated = [itemWithId, ...history.slice(0, 9)];
+      setHistory(updated);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error('Ошибка сохранения:', e);
+    }
+  };
+
+  const clearHistory = async () => {
+    try {
+      await AsyncStorage.removeItem(STORAGE_KEY);
+      setHistory([]);
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const generateInvoice = async (textToProcess = inputText) => {
     const query = textToProcess.trim();
@@ -66,6 +108,7 @@ export default function App() {
       const cleanedJson = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
       const parsed = JSON.parse(cleanedJson);
       setInvoiceData(parsed);
+      await saveInvoiceToHistory(parsed);
     } catch (error) {
       console.error(error);
       alert('Ошибка генерации. Проверь текст или API-ключ.');
@@ -99,78 +142,118 @@ export default function App() {
     }
   };
 
-  const generatePdf = async () => {
-    if (!invoiceData) return;
+  const generatePdf = async (customInvoice = invoiceData) => {
+    const target = customInvoice || invoiceData;
+    if (!target) return;
 
     const htmlContent = `
       <!DOCTYPE html>
       <html>
         <head>
           <meta charset="utf-8" />
+          <title>Инвойс - ${target.client_name}</title>
           <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 40px; color: #0f172a; }
-            .header { display: flex; justify-content: space-between; border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; }
-            .title { font-size: 24px; font-weight: 800; color: #2563eb; }
-            .badge { background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-            .section { margin-top: 30px; }
-            .meta-title { font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 700; margin-bottom: 4px; }
-            .client { font-size: 18px; font-weight: 700; }
-            table { width: 100%; border-collapse: collapse; margin-top: 24px; }
-            th { text-align: left; padding: 12px 8px; background: #f8fafc; font-size: 12px; color: #64748b; border-bottom: 1px solid #e2e8f0; }
-            td { padding: 12px 8px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }
+            @page { margin: 20mm; size: auto; }
+            body { 
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+              color: #0f172a; 
+              margin: 0;
+              padding: 24px;
+              background: #ffffff;
+            }
+            .header { 
+              display: flex; 
+              justify-content: space-between; 
+              align-items: baseline;
+              border-bottom: 2px solid #0f172a; 
+              padding-bottom: 16px; 
+              margin-bottom: 24px;
+            }
+            .title { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
+            .deadline { font-size: 14px; font-weight: 600; color: #475569; }
+            .section { margin-bottom: 24px; }
+            .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 700; margin-bottom: 4px; }
+            .client-name { font-size: 18px; font-weight: 700; color: #0f172a; }
+            table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+            th { 
+              text-align: left; 
+              padding: 10px 8px; 
+              font-size: 11px; 
+              font-weight: 700;
+              text-transform: uppercase;
+              color: #64748b; 
+              border-bottom: 1px solid #cbd5e1; 
+            }
+            td { padding: 12px 8px; border-bottom: 1px solid #f1f5f9; font-size: 14px; color: #1e293b; }
             .right { text-align: right; }
-            .total-box { margin-top: 30px; text-align: right; font-size: 18px; font-weight: 800; }
-            .total-sum { font-size: 26px; color: #16a34a; margin-top: 6px; }
+            .total-container { margin-top: 32px; display: flex; justify-content: flex-end; }
+            .total-box { min-width: 200px; text-align: right; border-top: 2px solid #0f172a; padding-top: 12px; }
+            .total-label { font-size: 13px; color: #64748b; font-weight: 600; }
+            .total-amount { font-size: 26px; font-weight: 800; color: #0f172a; margin-top: 4px; }
           </style>
         </head>
         <body>
           <div class="header">
-            <div>
-              <div class="title">SoloInvoice AI</div>
-              <div style="color: #64748b; font-size: 13px; margin-top: 4px;">Счет на оплату услуг</div>
-            </div>
-            <div class="badge">Дедлайн: ${invoiceData.deadline || 'По договоренности'}</div>
+            <div class="title">INVOICE</div>
+            <div class="deadline">Срок оплаты: ${target.deadline || 'По согласованию'}</div>
           </div>
 
           <div class="section">
-            <div class="meta-title">Заказчик / Клиент:</div>
-            <div class="client">${invoiceData.client_name}</div>
+            <div class="label">Получатель счёта:</div>
+            <div class="client-name">${target.client_name}</div>
           </div>
 
           <table>
             <thead>
               <tr>
-                <th>ОПИСАНИЕ УСЛУГИ</th>
-                <th class="right">КОЛ-ВО</th>
-                <th class="right">ЦЕНА</th>
-                <th class="right">СУММА</th>
+                <th>Наименование услуги</th>
+                <th class="right">Кол-во</th>
+                <th class="right">Цена</th>
+                <th class="right">Сумма</th>
               </tr>
             </thead>
             <tbody>
-              ${invoiceData.items.map(item => `
+              ${target.items.map(item => `
                 <tr>
                   <td>${item.description}</td>
                   <td class="right">${item.quantity}</td>
-                  <td class="right">${item.unit_price}${invoiceData.currency}</td>
-                  <td class="right"><b>${item.total}${invoiceData.currency}</b></td>
+                  <td class="right">${item.unit_price}${target.currency}</td>
+                  <td class="right"><b>${item.total}${target.currency}</b></td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
 
-          <div class="total-box">
-            <div style="font-size: 14px; color: #64748b;">Итого к перечислению:</div>
-            <div class="total-sum">${invoiceData.total_amount} ${invoiceData.currency}</div>
+          <div class="total-container">
+            <div class="total-box">
+              <div class="total-label">Итого к оплате:</div>
+              <div class="total-amount">${target.total_amount} ${target.currency}</div>
+            </div>
           </div>
         </body>
       </html>
     `;
 
+    if (typeof window !== 'undefined' && window.document) {
+      const printWindow = window.open('', '_blank', 'width=800,height=900');
+      if (printWindow) {
+        printWindow.document.open();
+        printWindow.document.write(htmlContent);
+        printWindow.document.close();
+        printWindow.focus();
+        setTimeout(() => {
+          printWindow.print();
+          printWindow.close();
+        }, 300);
+        return;
+      }
+    }
+
     try {
       await Print.printAsync({ html: htmlContent });
     } catch (e) {
       console.error(e);
-      alert('Не удалось сформировать PDF для печати.');
+      alert('Не удалось сформировать PDF.');
     }
   };
 
@@ -227,12 +310,12 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
-        {/* Результат генерации */}
+        {/* Результат текущей генерации */}
         {invoiceData && (
           <View style={styles.invoiceCard}>
             <View style={styles.invoiceHeader}>
               <View>
-                <Text style={styles.invoiceLabel}>КЛИЕНТ</Text>
+                <Text style={styles.invoiceLabel}>ТЕКУЩИЙ СЧЕТ</Text>
                 <Text style={styles.clientName}>{invoiceData.client_name}</Text>
               </View>
               {invoiceData.deadline && (
@@ -265,11 +348,10 @@ export default function App() {
               </Text>
             </View>
 
-            {/* Блок действий с инвойсом */}
             <View style={styles.actionsContainer}>
               <TouchableOpacity 
                 style={[styles.actionBtn, styles.pdfBtn]}
-                onPress={generatePdf}
+                onPress={() => generatePdf(invoiceData)}
               >
                 <Text style={styles.pdfBtnText}>📄 Сохранить PDF</Text>
               </TouchableOpacity>
@@ -285,6 +367,38 @@ export default function App() {
             </View>
           </View>
         )}
+
+        {/* Блок сохраненной истории */}
+        {history.length > 0 && (
+          <View style={styles.historySection}>
+            <View style={styles.historyHeader}>
+              <Text style={styles.historyTitle}>История счетов ({history.length})</Text>
+              <TouchableOpacity onPress={clearHistory}>
+                <Text style={styles.clearHistoryText}>Очистить</Text>
+              </TouchableOpacity>
+            </View>
+
+            {history.map((item) => (
+              <TouchableOpacity 
+                key={item.id} 
+                style={styles.historyItem}
+                onPress={() => setInvoiceData(item)}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.historyClient}>{item.client_name}</Text>
+                  <Text style={styles.historyMeta}>
+                    {item.createdAt} • {item.items?.length || 0} поз.
+                  </Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={styles.historyTotal}>{item.total_amount} {item.currency}</Text>
+                  <Text style={styles.historyOpenHint}>Открыть →</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -328,7 +442,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.04,
     shadowRadius: 12,
     elevation: 2,
-    marginBottom: 24,
+    marginBottom: 20,
   },
   textArea: {
     backgroundColor: '#f8fafc',
@@ -361,6 +475,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 16,
     elevation: 3,
+    marginBottom: 28,
   },
   invoiceHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   invoiceLabel: { fontSize: 11, fontWeight: '700', color: '#94a3b8', letterSpacing: 0.5 },
@@ -391,4 +506,24 @@ const styles = StyleSheet.create({
   copyBtnActive: { backgroundColor: '#ecfdf5', borderColor: '#6ee7b7' },
   copyBtnText: { color: '#334155', fontSize: 14, fontWeight: '600' },
   copyBtnTextActive: { color: '#065f46' },
+
+  historySection: { marginTop: 8 },
+  historyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  historyTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a' },
+  clearHistoryText: { fontSize: 13, color: '#ef4444', fontWeight: '600' },
+  historyItem: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  historyClient: { fontSize: 15, fontWeight: '600', color: '#0f172a' },
+  historyMeta: { fontSize: 12, color: '#64748b', marginTop: 2 },
+  historyTotal: { fontSize: 15, fontWeight: '700', color: '#16a34a' },
+  historyOpenHint: { fontSize: 11, color: '#2563eb', marginTop: 2 },
 });
